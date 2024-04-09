@@ -1,45 +1,79 @@
-name: hlsdl build
+name: Windows Build
 
 on:
   workflow_dispatch:
 
 jobs:
-  
-  build-windows:
+  build:
     runs-on: windows-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
 
-      - name: Install Chocolatey
+      # Install Git
+      - name: Install Git
         run: |
-          Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
+          choco install -y git
 
-      - name: Install dependencies
-        run: choco install -y make mingw
+      # Install Visual Studio
+      - name: Install Visual Studio
+        run: |
+          choco install -y visualstudio2019community
 
-      - name: Build for Windows
-        run: mingw32-make
+      # Install CMake
+      - name: Install CMake
+        run: |
+          choco install -y cmake
 
-      - name: Download testfile
-        run: ./hlsdl -b -o test.ts "https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_4x3/bipbop_4x3_variant.m3u8"
+      # Clone hlsdl
+      - name: Clone hlsdl
+        run: |
+          git clone https://github.com/samsamsam-iptvplayer/hlsdl.git
 
-      - name: Verify testfile
-        run: echo "6bf11a9a4be02443d4790e43e6569a614128bad453c5cb327ec74031f6ea6382  test.ts" | shasum -a256 -c
+      # Download Pre-compiled OpenSSL MSCVC and extract
+      # Ensure to manually download the OpenSSL MSCVC package and place it in the working directory beforehand
 
-      - name: Create Windows release
-        id: create_release_windows
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: v1.0-windows
-          release_name: Release v1.0 for Windows
-          body: |
-            Release of version 1.0 for Windows.
-        # Upload Windows artifact
-      - name: Upload Windows artifact
-        uses: actions/upload-artifact@v2
-        with:
-          name: hlsdl-windows
-          path: ./hlsdl
+      # Download pthreads and extract
+      # Ensure to manually download the pthreads package and place it in the working directory beforehand
+
+      # Build pthreads
+      - name: Build pthreads
+        run: |
+          cd pthreads-w32-2-9-1-release\pthreads.2
+          "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvarsall.bat" x64
+          set cl=/D_TIMESPEC_DEFINED
+          nmake clean VC-static
+          copy pthreadVC2.lib ..\Pre-built.2\lib\x64\pthreadVC2MT.lib
+          nmake clean VC-static-debug
+          copy pthreadVC2.lib ..\Pre-built.2\lib\x64\pthreadVC2MTd.lib
+          cd ..\..\
+
+      # Clone curl
+      - name: Clone curl
+        run: |
+          git clone https://github.com/curl/curl.git
+          cd curl
+          git checkout tags/curl-7_62_0
+
+      # Build curl
+      - name: Build curl
+        run: |
+          buildconf.bat
+          "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvarsall.bat" x64
+          copy ..\hlsdl\msvc\curl\MakefileBuild.vc winbuild\MakefileBuild.vc
+          cd winbuild
+          nmake /f Makefile.vc mode=dll WITH_SSL=dll SSL_PATH=../../openssl-1.1.0f-vs2017 DEBUG=yes MACHINE=x64
+          nmake /f Makefile.vc mode=dll WITH_SSL=dll SSL_PATH=../../openssl-1.1.0f-vs2017 DEBUG=no MACHINE=x64
+          nmake /f Makefile.vc mode=static WITH_SSL=static SSL_PATH=../../openssl-1.1.0f-vs2017 DEBUG=no MACHINE=x64
+          cd ..
+
+      # Check the built curl
+      - name: Check curl version
+        run: |
+          .\builds\libcurl-vc-x64-release-dll-ssl-dll-ipv6-sspi\bin\curl.exe --version
+
+      # Open project solution hlsdl.sln inside hlsdl\msvc\ and build the project
+      # This step needs manual intervention as GitHub Actions does not support GUI applications
+      
+      # Note: Ensure to adjust paths and commands as necessary based on your setup
