@@ -1,18 +1,39 @@
 name: hlsdl build
 
-on: [push, pull_request]
+on:
+  workflow_dispatch:
 
 jobs:
   build-macos:
-
-    runs-on: macos-14
-    
+    runs-on: macOS-14
     steps:
-    - uses: actions/checkout@v1
-    - name: make
-      run: make
-    - name: download testfile
-      run: ./hlsdl -b -o test.ts "https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_4x3/bipbop_4x3_variant.m3u8"
-    - name: verify testfile
-      run: echo "6bf11a9a4be02443d4790e43e6569a614128bad453c5cb327ec74031f6ea6382  test.ts" | shasum -a256 -c 
+      - name: mac chip
+        run: sysctl -a | grep machdep.cpu 
+      - name: Checkout code
+        uses: actions/checkout@v2
+      
+      - name: Build for macOS
+        run: make
 
+      - name: Download testfile
+        run: ./hlsdl -b -o test.ts "https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_4x3/bipbop_4x3_variant.m3u8"
+
+      - name: Verify testfile
+        run: echo "6bf11a9a4be02443d4790e43e6569a614128bad453c5cb327ec74031f6ea6382  test.ts" | shasum -a256 -c
+
+      - name: Create macOS release
+        id: create_release_macos
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v1.0-macos
+          release_name: Release v1.0 for macOS
+          body: |
+            Release of version 1.0 for macOS.
+        # Upload macOS artifact
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: hlsdl-macos
+          path: ./hlsdl
