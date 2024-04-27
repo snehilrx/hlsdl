@@ -55,10 +55,11 @@ static uint64_t get_duration_ms(const char *ptr)
     }
 
     if (v2 > 0)
-    while (n < 3) {
-        ++n;
-        v2 *= 10;
-    }
+        while (n < 3)
+        {
+            ++n;
+            v2 *= 10;
+        }
 
     return v1 * 1000 + v2;
 }
