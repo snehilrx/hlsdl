@@ -25,6 +25,17 @@
 #include "aes.h"
 #include "mpegts.h"
 
+#define N_THREADS 1
+
+struct ThreadArgs
+{
+    void *session;
+    int success;
+    hls_media_playlist_t *me;
+    hls_media_playlist_t *ms;
+    struct ByteBuffer *buffer;
+};
+
 static uint64_t get_duration_ms(const char *ptr)
 {
     uint64_t v1 = 0;
@@ -1560,7 +1571,7 @@ uint8_t * find_first_ts_packet(ByteBuffer_t *buf) {
 int download_hls(write_ctx_t *out_ctx, hls_media_playlist_t *me, hls_media_playlist_t *me_audio)
 {
     MSG_VERBOSE("Downloading segments.\n");
-    MSG_API("{\"d_t\":\"vod\"}\n"); // d_t - download type
+    MSG_API("{\"d_t\":\"vod\"}\n");                                                           // d_t - download type
     MSG_API("{\"t_d\":%u,\"d_d\":0, \"d_s\":0}\n", (uint32_t)(me->total_duration_ms / 1000)); // t_d - total duration, d_d  - download duration, d_s - download size
 
     int ret = 0;
@@ -1571,12 +1582,11 @@ int download_hls(write_ctx_t *out_ctx, hls_media_playlist_t *me, hls_media_playl
 
     uint64_t downloaded_duration_ms = 0;
     int64_t download_size = 0;
-    struct ByteBuffer seg;
-    struct ByteBuffer seg_audio;
 
     struct hls_media_segment *ms = me->first_media_segment;
     struct hls_media_segment *ms_audio = NULL;
     merge_context_t merge_context;
+
 
     if (me_audio) {
         ms_audio = me_audio->first_media_segment;
@@ -1584,52 +1594,112 @@ int download_hls(write_ctx_t *out_ctx, hls_media_playlist_t *me, hls_media_playl
         merge_context.out = out_ctx;
     }
 
-    while(ms) {
-        if (0 != vod_download_segment(&session, me, ms, &seg)) {
-            break;
+    while (ms)
+    {
+        // Create an array of threads
+        int n = N_THREADS;
+        pthread_t threads[n], threads_audio[n];
+        struct ThreadArgs thread_args[n], thread_audio_args[n];
+        int running_video_threads = 0, running_audio_threads = 0;
+        // Create threads
+        for (int i = 0; i < n && ms; ++i)
+        {
+            thread_args[i].session = session;
+            thread_args[i].me = me;
+            thread_args[i].ms = ms;
+            thread_args[i].buffer = malloc(sizeof(struct ByteBuffer));
+            assert(thread_args[i].buffer);
+            pthread_create(&threads[i], NULL, download_segment_thread, &thread_args[i]);
+            ms = ms->next;
+            running_video_threads++;
         }
-
-        uint8_t *first_video_packet = find_first_ts_packet(&seg);
-        uint8_t *first_audio_packet = NULL;
         if (ms_audio) {
-            if ( 0 != vod_download_segment(&session, me_audio, ms_audio, &seg_audio)) {
+            for (int i = 0; i < n && ms_audio; ++i)
+            {
+                thread_audio_args[i].session = session;
+                thread_audio_args[i].me = me_audio;
+                thread_audio_args[i].ms = ms_audio;
+                thread_audio_args[i].buffer = malloc(sizeof(struct ByteBuffer));
+                pthread_create(&threads_audio[i], NULL, download_segment_thread, &thread_audio_args[i]);
+                ms_audio = ms_audio->next;
+                running_audio_threads++;
+            }
+        }
+        int l = running_video_threads,  k = running_audio_threads;
+        for (int i = 0; i < n; ++i)
+        {
+            if (l) {
+                pthread_join(threads[i], NULL);
+                l--;
+            }
+            if (ms_audio && k) {
+                pthread_join(threads_audio[i], NULL);
+                k--;
+            }
+        }
+        l = running_video_threads,  k = running_audio_threads;
+        for (int i = 0; i < n; ++i)
+        {
+            struct ThreadArgs* audio = &thread_audio_args[i];
+            struct ThreadArgs* video = &thread_args[i];
+
+            uint8_t *first_audio_packet = NULL;
+            uint8_t *first_video_packet = NULL;
+            if (audio->success && k)
+            {
+                first_audio_packet = find_first_ts_packet(audio->buffer);
+                k--;
+            }
+            if (video->success && l)
+            {
+                first_video_packet = find_first_ts_packet(video->buffer);
+                l--;
+            }
+
+            if (!l && (!k && ms_audio)) {
                 break;
             }
-            first_audio_packet = find_first_ts_packet(&seg_audio);
+
+            struct ByteBuffer seg = *video->buffer;
+            struct ByteBuffer seg_audio = *audio->buffer;
+
+            // first segment should be TS for success merge
+            if (first_video_packet && first_audio_packet)
+            {
+                size_t video_len = seg.len - (first_video_packet - seg.data);
+                size_t audio_len = seg_audio.len - (first_audio_packet - seg_audio.data);
+
+                download_size += merge_packets(
+                    &merge_context,
+                    first_video_packet,
+                    video_len,
+                    first_audio_packet,
+                    audio_len);
+            }
+            else
+            {
+                download_size += out_ctx->write(seg.data, seg.len, out_ctx->opaque);
+            }
+
+            if (ms_audio)
+            {
+                free(seg_audio.data);
+            }
+
+            free(seg.data);
+
+            if (ms) {
+                downloaded_duration_ms += ms->duration_ms;
+
+
+                time_t curRepTime = time(NULL);
+                if ((curRepTime - repTime) >= 1)
+                {
+                    MSG_API("{\"t_d\":%u,\"d_d\":%u,\"d_s\":%" PRId64 "}\n", (uint32_t)(me->total_duration_ms / 1000), (uint32_t)(downloaded_duration_ms / 1000), download_size);
+                    repTime = curRepTime;
+                }
+            }
         }
-
-        // first segment should be TS for success merge
-        if (first_video_packet && first_audio_packet) {
-            size_t video_len = seg.len - (first_video_packet - seg.data);
-            size_t audio_len = seg_audio.len - (first_audio_packet - seg_audio.data);
-
-            download_size += merge_packets(
-                &merge_context,
-                first_video_packet,
-                video_len,
-                first_audio_packet,
-                audio_len
-            );
-        } else {
-            download_size += out_ctx->write(seg.data, seg.len, out_ctx->opaque);
-        }
-
-        if (ms_audio) {
-            free(seg_audio.data);
-            ms_audio = ms_audio->next;
-        }
-
-        free(seg.data);
-
-        downloaded_duration_ms += ms->duration_ms;
-
-        time_t curRepTime = time(NULL);
-        if ((curRepTime - repTime) >= 1) {
-            MSG_API("{\"t_d\":%u,\"d_d\":%u,\"d_s\":%"PRId64"}\n", (uint32_t)(me->total_duration_ms / 1000), (uint32_t)(downloaded_duration_ms / 1000), download_size);
-            repTime = curRepTime;
-        }
-
-        ms = ms->next;
     }
 
     MSG_API("{\"t_d\":%u,\"d_d\":%u,\"d_s\":%"PRId64"}\n", (uint32_t)(me->total_duration_ms / 1000), (uint32_t)(downloaded_duration_ms / 1000), download_size);
@@ -1794,4 +1864,26 @@ int fill_key_value(struct enc_aes128 *es)
     }
 
     return 0;
+}
+
+// Function to be executed by each thread
+void *download_segment_thread(void *arg)
+{
+    struct ThreadArgs *args = (struct ThreadArgs *)arg;
+    hls_media_playlist_t *me = args->me;
+    hls_media_playlist_t *ms = args->ms;
+    struct ByteBuffer *buffer = args->buffer;
+
+    // Download the segment
+    if (0 == vod_download_segment(&args->session, me, ms, buffer))
+    {
+        // Successfully downloaded
+        args->success = 1;
+        return NULL;
+    }
+    else
+    {
+        args->success = 0;
+        return NULL;
+    }
 }

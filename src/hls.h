@@ -108,6 +108,7 @@ void add_media_segment(hls_media_playlist_t *me);
 int fill_key_value(struct enc_aes128 *es);
 
 long get_hls_data_from_url(char *url, char **out, size_t *size, int type, char **new_url);
+void *download_segment_thread(void *arg);
 
 #ifdef __cplusplus
 }
