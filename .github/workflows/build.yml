@@ -35,5 +35,5 @@ jobs:
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v2
         with:
-          name: hlsdl-macos
+          name: hlsdl-macos-single
           path: ./hlsdl
